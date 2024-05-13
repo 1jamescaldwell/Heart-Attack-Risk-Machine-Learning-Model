@@ -1,0 +1,1064 @@
+---
+title: "SYS 6108 Final Project: Unveiling Heart Attack Risk Through Data Insights" 
+author: "Michael R. Burns and A. James Caldwell"
+format: sys6018hw-html
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Unveiling Heart Attack Risk Through Data Insights
+
+# Link to data: https://www.kaggle.com/competitions/heart-attack-risk-analysis
+
+```{r config, include=FALSE}
+# Set global configurations and settings here
+knitr::opts_chunk$set()                 # set global chunk options
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+# Initialize the required R packages and directories {.unnumbered .unlisted}
+data_dir = 'https://mdporter.github.io/SYS6018/data/' # data directory
+library(dplyr)
+library(mclust)    # for model-based clustering
+library(mixtools)  # for poisson mixture mode
+library(tidyverse) # functions for data manipulation   
+library(ranger)       # fast random forest implementation
+library(glmnet)    # for glmnet() functions
+library(yardstick) # for evaluation metrics
+library(xgboost)
+library(caret)
+```
+
+The goal of this project is to predict whether a patient is at a high or
+low risk of a heart attack. We are using the Kaggle dataset "Heart
+Attack Risk Analysis" which has medical and demographic information for
+over 7000 patients. The heart attack risk variable is the outcome and
+all others are predictors.
+
+# Data Loading
+
+## Set the Seed
+
+```{r}
+set.seed(227)
+```
+
+## Load the Data set
+
+```{r}
+fp_train <- 'C:/Users/michael.burns/OneDrive - University of Virginia/2024 Spring Classes/SYS 6018 - Data Mining/Code/Heart Attack/train.csv'
+fp_test <- 'C:/Users/michael.burns/OneDrive - University of Virginia/2024 Spring Classes/SYS 6018 - Data Mining/Code/Heart Attack/test.csv'
+
+# fp_train <- 'C:/Users/james.caldwell/OneDrive - University of Virginia/Documents/4School/SYS 6018 Data Mining/Final Project/train.csv'
+# fp_test <- 'C:/Users/james.caldwell/OneDrive - University of Virginia/Documents/4School/SYS 6018 Data Mining/Final Project/test.csv'
+
+# Load the data
+train = read.csv(fp_train)
+test = read.csv(fp_test)
+```
+
+# Data Exploration
+
+Before modeling, we did some brief data exploration. Here we show the
+density/percentages of patient correlation of BMI, heart rate, age, and
+previous heart problems to their heart attack risk level.
+
+```{r}
+# Filter data for Heart.Attack.Risk = 0 and 1
+risk_0 <- subset(train, Heart.Attack.Risk == 0)
+risk_1 <- subset(train, Heart.Attack.Risk == 1)
+
+# Create density plots
+plot_age <- ggplot(train, aes(x = Age)) +
+  geom_density(data = risk_0, aes(fill = "0"), alpha = 0.5) +
+  geom_density(data = risk_1, aes(fill = "1"), alpha = 0.5) +
+  labs(x = "Age", y = "Density", title = "Density of Heart Attack Risk by Age") +
+  theme_minimal() +
+  scale_fill_manual(name = "Heart Attack Risk", values = c("0" = "blue", "1" = "yellow"))
+# Display the plot
+print(plot_age)
+```
+
+The density of observations is plotted for age here broken down by those
+with a heart attack risk of 0 and 1. From this we can see that there are
+minimal differences between the ages in the two risk categories.
+
+```{r}
+# Create density plots
+plot_HR <- ggplot(train, aes(x = Heart.Rate)) +
+  geom_density(data = train[train$Heart.Attack.Risk == 0,], aes(fill = "0"), alpha = 0.5) +
+  geom_density(data = train[train$Heart.Attack.Risk == 1,], aes(fill = "1"), alpha = 0.5) +
+  labs(x = "Heart Rate", y = "Density", title = "Density of Heart Attack Risk by Heart Rate") +
+  theme_minimal() +
+  scale_fill_manual(name = "Heart Attack Risk", values = c("0" = "blue", "1" = "yellow"))
+# Display the plot
+print(plot_HR)
+```
+
+The density of observations is plotted for heart rate here broken down
+by those with a heart attack risk of 0 and 1. From this we can see that
+there are minimal differences between the heart rates in the two risk
+categories.
+
+```{r}
+# Create density plots
+plot_BMI  <- ggplot(train, aes(x = BMI)) +
+  geom_density(data = train[train$Heart.Attack.Risk == 0,], aes(fill = "0"), alpha = 0.5) +
+  geom_density(data = train[train$Heart.Attack.Risk == 1,], aes(fill = "1"), alpha = 0.5) +
+  labs(x = "BMI", y = "Density", title = "Density of Heart Attack Risk by BMI") +
+  theme_minimal() +
+  scale_fill_manual(name = "Heart Attack Risk", values = c("0" = "blue", "1" = "yellow"))
+# Display the plot
+print(plot_BMI )
+```
+
+The density of observations is plotted for BMI broken down by those with
+a heart attack risk of 0 and 1. From this we can see that there are
+minimal differences between the BMI in the two risk categories.From
+these plots and others generated we can tell that there are minimal (if
+any) obvious differences in the populations between those with and
+without heart attack risk.
+
+We then wanted to look at the correlation of a high heart attack risk
+for those with previous heart problems. We generated a risk percentage
+of those with and without previous problems (given the state of previous
+problems what is the percentage that have a heart attack risk of 1).
+This code could be used to look at any other binary predictor variables
+as well.
+
+```{r}
+# Calculate the total number of individuals with and without previous heart problems
+total_with_previous_heart_problems <- sum(train$Previous.Heart.Problems == 1)
+total_without_previous_heart_problems <- sum(train$Previous.Heart.Problems == 0)
+
+# Calculate the number of individuals with and without previous heart problems who have a heart attack risk
+with_previous_heart_attack <- sum(train$Previous.Heart.Problems == 1 & train$Heart.Attack.Risk == 1)
+without_previous_heart_attack <- sum(train$Previous.Heart.Problems == 0 & train$Heart.Attack.Risk == 1)
+
+# Calculate the percentage of individuals with and without previous heart problems who have a heart attack risk
+percentage_with_previous_heart_attack <- (with_previous_heart_attack / total_with_previous_heart_problems) * 100
+percentage_without_previous_heart_attack <- (without_previous_heart_attack / total_without_previous_heart_problems) * 100
+
+# Print the percentages
+cat("Percentage of individuals with previous heart problems and heart attack risk:", percentage_with_previous_heart_attack, "%\n")
+cat("Percentage of individuals without previous heart problems and heart attack risk:", percentage_without_previous_heart_attack, "%\n")
+```
+
+Here we can see that there is little difference in the heart attack risk
+between those with and without previous heart problems since the risk
+for those with is \~1% higher. This is going to come into play in our
+analysis since there are only slight differences in any given variable
+that will lead to a different risk outcome.
+
+## Summarizing the data exploration
+
+The data is complex with multiple interaction points for the numeric
+data. For the binary data, there are small differences between the
+outputs for risk level predictors. Any model that will predict well for
+this dataset will have to carefully balance high complexity while
+avoiding overfitting.
+
+# Clean the data
+
+Many steps needed to be taken to take the data from its raw state to
+something that could be used by data mining methods.
+
+## Patient ID
+
+Patient ID was a unique value for each observation and thus carried no
+modeling utility so it was removed from the data set.
+
+```{r}
+#first need to remove patient ID from both data sets because it is unique so its not helpful for modeling
+data_train <- subset(train, select = -Patient.ID)
+data_test <- subset(test, select = -Patient.ID)
+```
+
+## Blood Pressure
+
+Blood pressure is reported as two numbers. The value is commonly
+reported as Systolic/Diastolic
+(https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings)
+where the values are reported together. Since each of these values means
+something about the patient and the models would not be able to handle
+the slash, this was separated into two different variables. The upper
+refers to the systolic pressure and the lower refers to the diastolic
+pressure.
+
+```{r}
+#Handle Blood Pressure
+#On the training data
+data_train <- separate(data_train, Blood.Pressure, into = c("Blood.Pressure.Upper","Blood.Pressure.Lower"), sep = "/")
+# Convert the newly created columns to numeric
+data_train$Blood.Pressure.Upper <- as.numeric(data_train$Blood.Pressure.Upper)
+data_train$Blood.Pressure.Lower <- as.numeric(data_train$Blood.Pressure.Lower)
+#On the test data
+data_test <- separate(data_test, Blood.Pressure, into = c("Blood.Pressure.Upper","Blood.Pressure.Lower"), sep = "/")
+# Convert the newly created columns to numeric
+data_test$Blood.Pressure.Upper <- as.numeric(data_test$Blood.Pressure.Upper)
+data_test$Blood.Pressure.Lower <- as.numeric(data_test$Blood.Pressure.Lower)
+```
+
+## One-hot Encoding and Scaling
+
+All of the data needed additional cleaning. For the categorical
+variables we needed to use one-hot encoding for the numerical models to
+be able to handle the data. The one-hot encoding split each of the
+categorical variables into a different column for each entry. Since we
+had measurements with different magnitudes we also needed to scale our
+numerical data. We scaled all of the numeric variables to have a mean of
+0 and a standard deviation of 1. This brought all of our values to a
+level where they could be put into the same model and one would not
+artificially outweigh another.
+
+```{r}
+#First split off the outcome from the training data
+data_train_out <- subset(data_train, select=Heart.Attack.Risk)
+data_train_input <- subset(data_train, select=-Heart.Attack.Risk)
+#combine the train and test data for consistency in preprocessing
+combined_data <- rbind(data_train_input,data_test)
+
+#while in this state I need to scale all of our data
+numeric_column_names <- c("Age","Cholesterol","Blood.Pressure.Upper","Blood.Pressure.Lower","Heart.Rate", "Exercise.Hours.Per.Week", "Stress.Level", "Sedentary.Hours.Per.Day","Income","BMI","Triglycerides","Physical.Activity.Days.Per.Week","Sleep.Hours.Per.Day")
+combined_data[,numeric_column_names] <- scale(combined_data[,numeric_column_names])
+
+#use makeX to handle 1 hot encoding
+combined_data_processed <- makeX(combined_data)
+#now separate back into train and test again
+data_train <- combined_data_processed[1:nrow(data_train),]
+data_test <- combined_data_processed[(nrow(data_train) + 1):nrow(combined_data),]
+
+#convert back to a data frame
+data_train <- as.data.frame(data_train)
+data_test <- as.data.frame(data_test)
+
+#now add the outcome column back into the training data
+data_train <- cbind(data_train, Heart.Attack.Risk = data_train_out)
+
+#replace all of the "." and " " with "_"
+names(data_train) <- gsub("[. ]","_", names(data_train))
+names(data_test) <- gsub("[. ]","_", names(data_test))
+```
+
+# Description of our data set
+
+Our data consists of:
+
+```{r}
+#predictors count
+num_predictors <- ncol(train) - 2
+print(paste("There are", num_predictors,"predictor variables in the raw data."))
+```
+
+```{r}
+#observations
+num_observations <- nrow(train)
+print(paste("There are", num_observations,"observations in the data set."))
+```
+
+```{r}
+#predictors count
+num_predictors <- ncol(data_train) - 1
+print(paste("After the data processing there are", num_predictors,"predictor variables for the data."))
+```
+
+The number of observations is unchanged by the data processing.
+
+The following is a summary of the variables after one hot encoding and
+scaling are done.
+
+```{r}
+summary(data_train)
+```
+
+```{r}
+num_pos <- sum(data_train$Heart_Attack_Risk == 1)
+num_neg <- sum(data_train$Heart_Attack_Risk == 0)
+print(paste("There are", num_pos,"observations with a heart attack risk of 1"))
+print(paste("There are", num_neg,"observations with a heart attack risk of 0"))
+```
+
+# Holdout and Test Sets
+
+We created a holdout set of the data from the total training data set.
+The holdout was sampled randomly as 1/10 of the data set. The holdout
+data set was created for evaluation of the models so that we can
+establish a metric for assessment. 1/10 of the data was chosen to make
+each set large enough for their purposes.
+
+```{r}
+#get the holdout data
+# Step 1: Determine the total number of rows
+total_rows <- nrow(data_train)
+
+# Step 2: Calculate the number of rows for holdout (one-tenth of total)
+holdout_size <- round(total_rows / 10)
+
+# Step 3: Randomly select row indices for holdout
+holdout_indices <- sample(1:total_rows, holdout_size)
+
+# Step 4: Create the holdout dataset by subsetting the original data table
+holdout_data <- data_train[holdout_indices, ]
+
+# Remove the holdout rows from the original dataset to get the training dataset
+training_data <- data_train[-holdout_indices, ]
+```
+
+The following are the data after this split:
+
+```{r}
+#observations in training set
+num_train <- nrow(training_data)
+print(paste("There are", num_train,"observations in the training data set."))
+```
+
+```{r}
+#observations in holdout set
+num_hold <- nrow(holdout_data)
+print(paste("There are", num_hold,"observations in the holdout data set."))
+```
+
+We needed to check that this random sample did not unevenly select the
+data with respect to heart attack risk. One way of doing this is to
+check the data sets to see if their proportions in the response variable
+agreed.
+
+```{r}
+#percentage of observations that had a heart attack in training set
+pct_train <- (sum(training_data$Heart_Attack_Risk == 1)/nrow(training_data))*100
+print(paste(pct_train,"% of the observations in the training data set had a positive heart attack risk."))
+```
+
+```{r}
+#percentage of observations that had a heart attack in training set
+pct_hold <- (sum(holdout_data$Heart_Attack_Risk == 1)/nrow(holdout_data))*100
+print(paste(pct_hold,"% of the observations in the holdout data set had a positive heart attack risk."))
+```
+
+Since these percentages are close we are okay with the training/holdout
+split here being considered random.
+
+## Get data subsets
+
+For simplicity of model inputs we split the data into the predictor and
+outcome/output variables. The outcome was the Heart attack risk and all
+others were predictors
+
+```{r}
+#get the subset of holdout data
+holdout_predictors <- subset(holdout_data, select = -Heart_Attack_Risk)
+holdout_outcome <- holdout_data$Heart_Attack_Risk
+
+#get the subsets of training data
+train_predictors <- subset(training_data, select = -Heart_Attack_Risk)
+train_output <- training_data$Heart_Attack_Risk
+```
+
+## Data characteristics of the training data used for model creation
+
+The characteristics of the training data (after the holdout/training
+split) are shown here. There are no apparent differences between this
+and the summary before the split, so this process has not changed our
+sample.
+
+```{r}
+summary(training_data)
+```
+
+# Cost Function
+
+We are using a cost metric for classification of heart attack risk as 0
+(no heart attack) or 1 (heart attack). In this case a false positive
+represents a prediction of a heart attack when there is no heart attack.
+A false negative represents a prediction of no heart attack when there
+is a heart attack. This model is meant to be a tool to see if you are at
+risk and NOT a diagnostic tool (we suggest this model be used for
+someone to assess whether they should get checked/monitored by a health
+care professional). Accordingly there is a low cost of a false positive
+related to a false negative since the only cost of a false positive is
+going to an appointment you don't need to, but the cost of a false
+negative would be never seeking the help that may be needed.
+
+```{r}
+#evaluate based on cost for the iterations
+cost_FP <- 1 #predicting a heart attack when there is no heart attack
+cost_FN <- 3 #predicting no heart attack when there is a heart attack
+prob_thresh <- cost_FP/(cost_FN+cost_FP)
+
+print(paste("The cost of a false positive is", cost_FP))
+print(paste("The cost of a false negative is", cost_FN))
+print(paste("This means a false negative is", cost_FN/cost_FP, "times worse than than a false positive"))
+print(paste("This sets the cost probability threshold as", prob_thresh))
+```
+
+## Create the factor
+
+This is a code detail to handle the binary output variable of the
+Heart_Attack_Risk variable
+
+```{r}
+training_factor <- factor(train_output)
+holdout_factor <- factor(holdout_outcome)
+```
+
+# Model Evaluation Metric
+
+The models we will generate will give probabilities as outputs. These
+then need to be thresholded by the cost probability threshold determined
+above to get a binary output of 0 or 1 corresponding to no risk or risk
+of heart attack. After the classification the predictions were compared
+to known data to calculate accuracy. $$
+Accuracy = \frac{TP+TN}{TP+TN+FP+FN}
+$$ For comparison of models a higher accuracy meant a better model
+performance.
+
+# Random Forest
+
+A random forest model was fit. Tuning parameters were investigated to
+determine the optimal model in terms of accuracy.
+
+## Set the Tuning Parameter Ranges
+
+The range over which to search to find the optimal values for mtry and
+minimum bucket size were set as a range of potential values.
+
+```{r}
+#mtry range this should be close to sqrt(p) where p is 53. 
+mtry_range <- seq(4,50, by = 2)
+#minimum bucket size searching from 1-10
+min_bucket_range <- seq(1,4)
+#set the number of trees to look at
+num_trees = 1000
+#number of times to run the random forest for each tuning set to determine the optimal
+num_tuning = 5
+```
+
+The range over which to search to find the optimal values for mtry and
+minimum bucket size were set as a range of potential values. In the
+approach we set the number of trees to look at as a large value (1000)
+since this is where random forest tends to perform best. In addition we
+ran each random forest model 5 times to determine an averaged fit over
+multiple iterations.
+
+## Optimize the tuning parameters
+
+An output variable is made which holds the mtry value, minimum bucket
+size value, and accuracy value for that model. For each value in the set
+range of mtry and min_bucket a random forest model is fit 5 separate
+times to the training data. The probabilities are output from the model
+and then split on the cost probability threshold set earlier. The
+accuracy is calculated with respect to the known heart attack risk
+values by creating a confusion matrix with the training data. The
+accuracy for each of the 5 iterations is averaged and the tuning
+parameters are stored along with the accuracy value.
+
+```{r}
+#initialize the output
+output <- data.frame(mtry = numeric(length(mtry_range) * length(min_bucket_range)),
+                     min_bucket = numeric(length(mtry_range) * length(min_bucket_range)),
+                     accuracy = numeric(length(mtry_range) * length(min_bucket_range)))
+index <- 1
+
+for (i in 1:length(mtry_range)) {
+  #set the mtry here
+  mtry_here <- mtry_range[i]
+  for (j in 1:length(min_bucket_range)) {
+    #set the min bucket size
+    min_bucket_here <- min_bucket_range[j]
+    #initialize each time something to hold the oob_mse value
+    rf_accuracy_store <- numeric(num_tuning)
+    
+    #fit the random forest for this
+    for (k in 1:num_tuning) {
+      #create the model
+      model <- ranger(Heart_Attack_Risk ~ ., data = training_data, num.trees = num_trees, mtry = mtry_here, min.bucket = min_bucket_here)
+      #make predictions on the probability
+      predicted_prob <- predict(model, as.matrix(training_data))$predictions
+      #turn the probability into a 1 or 0
+      predicted_class <- ifelse(predicted_prob > prob_thresh, 1, 0)
+      #calculate the accuracy
+      predicted_factor <- factor(predicted_class, levels = levels(training_factor))
+      rf_accuracy <- confusionMatrix(predicted_factor, training_factor)$overall["Accuracy"]
+      rf_accuracy_store[k] <- rf_accuracy
+    }
+    #get the average of the rf accuracy
+    avg_rf_accuracy <- mean(rf_accuracy_store)
+    #print into the output dataframe
+    output$mtry[index] = mtry_here 
+    output$min_bucket[index] = min_bucket_here
+    output$accuracy[index] = avg_rf_accuracy
+    #advance the index by 1
+    index = index + 1
+  }
+}
+```
+
+## Plot the optimal tuning parameters
+
+The tuning parameters are plotted here with the color representing the
+accuracy value. From this we can tell the optimal tuning parameters.
+
+```{r}
+# Plot average accuracy as a function of mtry and min.node.size
+ggplot(output, aes(x = mtry, y = min_bucket, fill = accuracy)) +
+  geom_tile() +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", na.value = "grey50") +
+  labs(title = "Average accuracy as a function of mtry and min.node.size",
+       x = "mtry",
+       y = "min.bucket",
+       fill = "Average accuracy") +
+  theme_minimal()
+```
+
+## Identifying the best parameters
+
+```{r}
+best_params <- output[which.max(output$accuracy), ]
+print(paste("The optimal Mtry is:", best_params$mtry))
+print(paste("The optimal minimum number of buckets is:", best_params$min_bucket))
+```
+
+# Fit the best model
+
+The random forest model is then fit once, with 1000 trees, on the
+training data with the optimized tuning parameters.
+
+```{r}
+#train the random forest model
+model_RF <- ranger(Heart_Attack_Risk ~ ., data = training_data, num.trees = num_trees, mtry = best_params$mtry, min.bucket = best_params$min_bucket)
+```
+
+The model is used to generate probabilities from the random forest model
+and the characteristics of these are summarized here.
+
+```{r}
+#make predictions for the probability on the training set (leaving the holdout until later )
+probability_RF <- predict(model_RF, data = train_predictors)$predictions
+print("The probabilites for the random forest model are summarized by:")
+print(summary(probability_RF))
+```
+
+The optimal accuracy from the training data fit was determined
+
+```{r}
+print(paste("The optimal accuracy is:", best_params$accuracy))
+```
+
+## Penalized Logistic Regression with Cross Validation
+
+The next model that we chose to fit for our data was a penalized
+logistic regression model. We chose logistic regression since it is good
+for modeling a binary outcome.
+
+The general process here is to: <br> 1) tune alpha and lambda using
+training data. <br> 2) Fit a model using glmnet with family = binomial.
+<br> 3) Predict the training outcome using the training data as input.
+The accuracy of the LR model vs the training outcome is then calculated.
+<br> 4) The LR model is stored for use in the ensemble model
+
+# Tune the alpha
+
+Alpha is a parameter that governs the type of regularization applied in
+the model fitting process. A value of 1 emphasizes sparsity (some
+coefficients become exactly zero), while a value of 0 emphasizes
+stability (all coefficients are shrunk towards zero, but none become
+exactly zero).
+
+```{r}
+#-- Set folds so consistent over all runs
+set.seed(4040)   # set seed to reproducible
+K = 10           # number of folds
+folds = rep(1:K, length=nrow(training_data)) %>% sample() # make folds
+
+#-- Set alpha sequence
+alpha_seq = seq(0, 1, by=.05)
+
+lm_accuracy_store <- list()
+
+for (iter in 1:length(alpha_seq)) {
+  #get the alpha
+  alpha_here <- alpha_seq[iter]
+  #create the model
+  model <- cv.glmnet(as.matrix(train_predictors), as.matrix(train_output), 
+          foldid = folds, alpha=alpha_here, family = binomial)
+  #make predictions for the probability
+  probability <- predict(model, as.matrix(train_predictors),s=0,type = "response")
+  
+  #Threshold the probability to a 1 or 0
+  prediction <- ifelse(probability > prob_thresh, 1, 0)
+  # Create prediction as factor for accuracy comparison
+  prediction_factor <- factor(prediction, levels = levels(training_factor))
+  # Calculate model accuracy for the given alpha
+  lm_accuracy <- confusionMatrix(prediction_factor, training_factor)$overall["Accuracy"]
+  # Store accuracy
+  lm_accuracy_store[iter] <- lm_accuracy
+}
+```
+
+```{r}
+# Plot alpha_seq vs lm_accuracy_store
+plot(alpha_seq, lm_accuracy_store, type = "l", xlab = "Alpha", ylab = "Accuracy", main = "Accuracy vs Alpha")
+```
+
+```{r}
+optimal_alpha = alpha_seq[which.max(lm_accuracy_store)]
+print(paste("The optimal alpha value is:",optimal_alpha))
+```
+
+So from this we see that it is independent of alpha. So we choose an
+alpha value of 0, which retains all features but shrinks their weights
+toward 0.
+
+## Tune Lambda
+
+A large lambda means high complexity/large weights for coefficients,
+depending on Lasso or Ridge regression. A lambda of 0 means that there
+is no restriction on the number of coefficients or weight sizes.
+
+```{r}
+alpha = optimal_alpha
+set.seed(4040)   # set seed to reproducible
+K = 10           # number of folds
+folds = rep(1:K, length=nrow(training_data)) %>% sample() # make folds
+
+#-- Set alpha sequence
+lambda_seq = seq(0, 20, by=1)
+
+lm_accuracy_store <- list()
+
+for (iter in 1:length(lambda_seq)) {
+  #get the lambda
+  lambda_here <- lambda_seq[iter]
+  #create the model
+  model <- cv.glmnet(as.matrix(train_predictors), as.matrix(train_output), 
+          foldid = folds, alpha=alpha,family = binomial)
+  #make predictions for the probability
+  probability <- predict(model, as.matrix(train_predictors), s=lambda_here,type = "response")
+  
+  #convert the probability to a 1 or 0
+  prediction <- ifelse(probability > prob_thresh, 1, 0)
+  # Create prediction as factor for accuracy comparison
+  prediction_factor <- factor(prediction, levels = levels(training_factor))
+  # Calculate model accuracy for the given alpha
+  lm_accuracy <- confusionMatrix(prediction_factor, training_factor)$overall["Accuracy"]
+  # Store accuracy
+  lm_accuracy_store[iter] <- lm_accuracy
+}
+```
+
+```{r}
+# Plot lambda_seq vs lm_accuracy_store
+plot(lambda_seq, lm_accuracy_store, type = "l", xlab = "Lambda", ylab = "Accuracy", main = "Accuracy vs Alpha")
+```
+
+```{r}
+optimal_lambda = lambda_seq[which.max(lm_accuracy_store)]
+print(paste("The optimal lambda value is:",optimal_lambda))
+```
+
+# With the tuned alpha and lambda, fit the model
+
+```{r}
+# Set alpha and lambda
+alpha = optimal_alpha
+lambda = optimal_lambda
+# Fit the model
+LR_model = glmnet(as.matrix(train_predictors), as.matrix(train_output), alpha=alpha,family=binomial)
+```
+
+```{r}
+#find the probabilities
+probability_LR = predict(LR_model, newx=as.matrix(train_predictors), s = lambda,type = "response")[,1]
+print("The probabilites for the logistic regression model are summarized by:")
+print(summary(probability_LR))
+```
+
+Final Logistic Regression Model Accuracy
+
+```{r}
+  #convert the probability to a 1 or 0
+  prediction_lr <- ifelse(probability_LR > prob_thresh, 1, 0)
+  # Create prediction as factor for accuracy comparison
+  prediction_factor <- factor(prediction_lr, levels = levels(training_factor))
+  # Calculate model accuracy for the given alpha
+  accuracy_lr <- confusionMatrix(prediction_factor, training_factor)$overall["Accuracy"]
+  
+print(paste("The optimal logistic regression model accuracy:",accuracy_lr))
+```
+
+For our specific dataset, our model tends to prefer mostly intercept
+based models with large number of coefficients with minimal penalty to
+parameter weight. The logistic regression model seems to struggle
+predicting the data since it is so complex, where logistic regression
+assumes a linear relationship between the predictor variables and the
+log-odds of the outcome.
+
+# Boosted Trees
+
+We fit gradient boosted tree models using xgboost. We generated 500 base
+models. Each model was a simple decision tree that was then boosted 10
+times, sequentially improving upon the mistakes of the previous model.
+Predictions for each patient was then made for all 500 models.​ Then, we
+generated a meta-model of these 500 predictions for each patient and fit
+a logistic regression model for predicting probabilities of HAR for each
+patient.​
+
+```{r}
+# Define a list to store base models
+base_models <- list()
+
+# Train 500 base models (XGBoost)
+num_models = 500
+for (i in 1:num_models) {
+  base_models[[i]] <- xgboost(data = as.matrix(train_predictors), label = train_output, nrounds = 10, verbose = FALSE)
+}
+```
+
+Then probabilities were determined from each of the base models from the
+training data.
+
+```{r}
+# Make predictions using base models
+train_probs <- matrix(NA, nrow = nrow(training_data), ncol = num_models)  # Initialize matrix to store predictions
+for (i in 1:num_models) {
+  train_probs[, i] <- predict(base_models[[i]], as.matrix(train_predictors))
+}
+```
+
+The 500 models were then combined and a logistic regression was used to
+create a meta-model for the gradient boosted trees.
+
+```{r}
+# Combine base model probability and predicitons
+train_probability <- as.data.frame(train_probs)
+
+# Combine base model predictions and the true outcomes
+train_probability <- cbind(train_probability, Heart_Attack_Risk = train_output)
+
+# Define meta-model (logistic Regression)
+meta_model_BT <- train(Heart_Attack_Risk ~ ., data = train_probability, method = "glm", family = "binomial")
+```
+
+Using the meta model the probabilities for the holdout data were also
+created in this step.
+
+```{r}
+# Make predictions on the holdout data using base models
+holdout_probs <- matrix(NA, nrow = nrow(holdout_data), ncol = num_models)  # Initialize matrix to store predictions
+for (i in 1:num_models) {
+  holdout_probs[, i] <- predict(base_models[[i]], as.matrix(holdout_predictors))
+}
+# Combine base model predictions for test data
+holdout_probability <- as.data.frame(holdout_probs)
+```
+
+The meta model was then used with the training data to predict the
+probability from the boosted trees.
+
+```{r}
+# Make probabilities using meta-model
+probability_BT <- predict(meta_model_BT, newdata = train_probability)
+```
+
+## Probabilities
+
+```{r}
+print("The probabilites for the boosted trees model are summarized by:")
+print(summary(probability_BT))
+```
+
+## Accuracy
+
+The accuracy of the boosted trees meta-model was calculated by making
+the threshold, creating a confusion matrix and calculating accuracy
+
+```{r}
+#convert the probability to a 1 or 0
+prediction_bt <- ifelse(probability_BT > prob_thresh, 1, 0)
+# Create prediction as factor for accuracy comparison
+prediction_factor <- factor(prediction_bt, levels = levels(training_factor))
+# Calculate model accuracy for the given alpha
+accuracy_bt <- confusionMatrix(prediction_factor, training_factor)$overall["Accuracy"]
+print(paste("The optimal boosted trees model accuracy:",accuracy_bt))
+```
+
+### A small investigation into Feature Importance
+
+```{r}
+# Plotting feature importance
+xgb.importance(model = base_models[[100]])  # You can replace base_models[[1]] with any trained XGBoost model
+
+summary(probability_BT)
+```
+
+# Model Averaging
+
+We are assembling our three models to create an averaged model using all
+of them. The final model form will be: $$
+Probability_{overall}=A*Probability_{LR}+B*Probability_{RF}+C*Probability_{BT}
+$$ \## Coefficient Combinations To determine the final model we sought
+to determine the values of A, B, and C that maximized the accuracy of
+the averaged model on the training data.A represents the contribution of
+the logistic regression, b the contribution of the random forest, and C
+the contribution of the boosted trees. A, B, and C were set such that:
+$$
+A = [0:0.01:1]
+B = [0:0.01:1]
+C = [0:0.01:1]
+$$ AND $$
+A+B+C=1
+$$
+
+```{r}
+A <- seq(0, 1, by = 0.01)
+B <- seq(0, 1, by = 0.01)
+C <- seq(0, 1, by = 0.01)
+
+# Generate all combinations of A, B, and C
+combinations <- expand.grid(A = A, B = B, C = C)
+
+# Filter combinations where A + B + C equals 1
+valid_combinations <- subset(combinations, A + B + C == 1)
+print(paste("There are",nrow(valid_combinations),"combinations of A, B, and C that were tested"))
+```
+
+## Determining the optimal coefficients
+
+We used each of these combinations of coefficients to create an averaged
+model. Using that averaged model we got averaged probabilities. These
+probabilities were thresholded as done elsewhere and then accuracy was
+calculated for each model.
+
+```{r}
+#iterate over the valid combinations to decide the optimal values of A B C
+output <- list()
+for(i in 1:nrow(valid_combinations)) {
+  A_here = valid_combinations$A[i]
+  B_here = valid_combinations$B[i]
+  C_here = valid_combinations$C[i]
+  #get the averaged model probabilities
+  averaged_model_probability = A_here*probability_LR + B_here*probability_RF + C_here*probability_BT
+  #get the averaged model predictions
+  averaged_model_predictions <- ifelse(averaged_model_probability > prob_thresh, 1, 0)
+  #get the accuracy of the data
+  predicted_factor <- factor(averaged_model_predictions, levels = levels(training_factor))
+  
+  accuracy <- confusionMatrix(predicted_factor, training_factor)$overall["Accuracy"]
+  #store the data
+  output[i] <- accuracy
+}
+```
+
+```{r}
+best_index <- which.max(output)
+A_best <- valid_combinations$A[best_index]
+B_best <- valid_combinations$B[best_index]
+C_best <- valid_combinations$C[best_index]
+print(paste("There best A value is", A_best))
+print(paste("There best B value is", B_best))
+print(paste("There best C value is", C_best))
+```
+
+A large value here represents a large contribution of the model. Since
+the optimal value of B is 0.95, the random forest informs most of this
+model. On the opposite, since the optimal value of C is 0 the boosted
+trees model is not used in the model at all.
+
+This approach provides an excellent automatic process for combining the
+models into one ensemble model, but it has one drawback. It uses the
+training data (which all the models were tuned for) for calculating the
+accuracy for each model. Thus, this process will give a high priority to
+any model that is hyper-tuned to the training data. Improving this
+process could help our predictions for the holdout data. One solution
+that could have helped here would be to take a second set of holdout
+data that could be used to score the models' performance and generate
+the ensemble model weights.
+
+## Accuracy of Averaged Model
+
+The accuracy score was determined for the averaged model with the tuned
+coefficients on the training data.
+
+```{r}
+accuracy_overall = output[[which.max(output)]]
+print(paste("The optimal accuracy is:", accuracy_overall))
+```
+
+This accuracy tells us that this averaged model is able to represent the
+data very well.
+
+# Evaluate All Models on the Holdout Data
+
+## Generate holdout data probabilities
+
+For each model the holdout probabilities were generated. The outcomes
+(accuracy and confusion matrix) between each model are compared at the
+end of this section.
+
+```{r}
+#need to generate the probabilities for LR on the holdout data
+holdout_probability_LR = predict(LR_model, newx=as.matrix(holdout_predictors), s = lambda, type = "response")[,1]
+
+#need to generate the probabilities for RF on the holdout data
+holdout_probability_RF <- predict(model_RF, data = holdout_predictors)$predictions
+
+#need to generate the probabilities for BT on the holdout data
+holdout_probability_BT <- predict(meta_model_BT, newdata = holdout_probability)
+```
+
+## Evaluate the logistic regression model on the holdout data
+
+The same process as before was used to generate the predictions and
+accuracy of the logistic regression model on the holdout data.
+
+```{r}
+#threshold the probabilities
+holdout_LR_predictions <- ifelse(holdout_probability_LR > prob_thresh, 1, 0)
+#now evaluate the accuracy of this model
+predicted_factor_LR <- factor(holdout_LR_predictions, levels = levels(holdout_factor))
+#Get the confusion matrix
+conf_matrix_LR <- confusionMatrix(predicted_factor_LR, holdout_factor)
+#Calculate accuracy
+holdout_LR_accuracy <- conf_matrix_LR$overall["Accuracy"]
+```
+
+The confusion matrix for the Logistic regression model is:
+
+```{r}
+print(conf_matrix_LR$table)
+```
+
+```{r}
+print(paste("The accuracy on the holdout data for the logistic regression model is", holdout_LR_accuracy))
+```
+
+## Evaluate the random forest model on the holdout data
+
+The same process as before was used to generate the predictions and
+accuracy of the random forest model on the holdout data.
+
+```{r}
+#threshold the probabilities
+holdout_RF_predictions <- ifelse(holdout_probability_RF > prob_thresh, 1, 0)
+#now evaluate the accuracy of this model
+predicted_factor_RF <- factor(holdout_RF_predictions, levels = levels(holdout_factor))
+#Get the confusion matrix
+conf_matrix_RF <- confusionMatrix(predicted_factor_RF, holdout_factor)
+#Calculate accuracy
+holdout_RF_accuracy <- conf_matrix_RF$overall["Accuracy"]
+```
+
+The confusion matrix for the random forest model is:
+
+```{r}
+print(conf_matrix_RF$table)
+```
+
+```{r}
+print(paste("The accuracy on the holdout data for the random forest model is", holdout_RF_accuracy))
+```
+
+## Evaluate the boosted trees model on the holdout data
+
+The same process as before was used to generate the predicitons and
+accuracy of the boosted trees meta-model on the holdout data.
+
+```{r}
+#threshold the probabilities
+holdout_BT_predictions <- ifelse(holdout_probability_BT > prob_thresh, 1, 0)
+#now evaluate the accuracy of this model
+predicted_factor_BT <- factor(holdout_BT_predictions, levels = levels(holdout_factor))
+#Get the confusion matrix
+conf_matrix_BT <- confusionMatrix(predicted_factor_BT, holdout_factor)
+#Calculate accuracy
+holdout_BT_accuracy <- conf_matrix_BT$overall["Accuracy"]
+```
+
+The confusion matrix for the random forest model is:
+
+```{r}
+print(conf_matrix_BT$table)
+```
+
+Comparing the confusion matrices and accuracy scores across the models:
+\* The random forest model tended to predict very few negative cases. It
+was certainly overfit to the training data, and scored poorly on the
+holdout compared to its great performance on the training data. \* The
+logistic regression model was consistent between the holdout and
+training data predictions. It made very few negative case predictions
+(similar to RF), and interestingly had similar performance to the random
+forest model. \* The Boosted tree model had the highest accuracy on the
+holdout data. This model was far more likely to predict a negative case
+than the other models, with many of those times it was correct. It did
+however have quite a few false negatives, which is something we were
+hoping to avoid.
+
+```{r}
+print(paste("The accuracy on the holdout data for the boosted trees model is", holdout_BT_accuracy))
+```
+
+## Assemble the Final Averaged Model
+
+The final averaged model with the optimized coefficients was assembled.
+Probabilities and predictions were generated on the holdout data.
+
+```{r}
+#final model probability
+final_model_probability <- A_best*holdout_probability_LR + B_best*holdout_probability_RF + C_best*holdout_probability_BT
+#final model predictions
+final_model_predictions <- ifelse(final_model_probability > prob_thresh, 1, 0)
+
+#now evaluate the accuracy of this model
+predicted_factor <- factor(final_model_predictions, levels = levels(holdout_factor))
+  
+#get the accuracy of this one
+conf_matrix <- confusionMatrix(predicted_factor, holdout_factor)
+```
+
+The confuction matrix
+
+```{r}
+print(conf_matrix$table)
+```
+
+```{r}
+accuracy <- conf_matrix$overall["Accuracy"]
+print(paste("The overall model accuracy is", accuracy))
+```
+
+When our ensemble model was scored, we got an accuracy score of 0.35,
+which is not ideal. Looking at the confusion matrix though we see that
+most of the errors are in the false positive, which signifies our model
+is cautious, which is not a bad thing. The result we wanted to avoid was
+false negatives, and here there were very few.
+
+# Summary and Conclusions
+
+From this process we gained insights into the strengths and weaknesses
+of the models: <br> \* The Random Forest model preferred deep, complex
+trees. This makes this model extremely good at predicting the training
+data, but it overfit for the holdout data. This make sense, since our
+process tuned for the highest possible accuracy for the RF model. If we
+were to process this data again, we should not tune so aggressively. \*
+The Logistic Regression model preferred large intercepts and a greater
+number of parameters. We believe our data was too complex for LR to do
+well making predictions since LR assumes a linear relationship between
+the predictor variables and the log-odds of the outcome. It was a
+consistent predictor in the threshold probability region, so it seemsl
+like it probably added some stability to the predictions and was given a
+small weight. \* The Boosted Tree model had the best holdout performance
+but was given less weight than RF for ensemble model, likely because it
+wasn't as finely tuned to the training data. We hypothesize that the
+boosted tree model was generating similar predictions to the RF model,
+but less aggressively. So the RF model was given all the weight. The
+boosted tree model gave a balanced approach for our data overall.
+
+There are several lessons learned from this project: \* Data engineering
+was crucial for our dataset, and each improvement we made here saw
+improvements in model performance. We believe there are probably further
+insights that could be gained by further refining and preprocessing the
+data. \* We learned that we had the pay careful attention to whether our
+process/function was outputting predictions or probabilities. It was
+easy to accidentally compare predictions to probabilities or vice versa.
